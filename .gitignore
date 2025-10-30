@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# env
+.env
+server/.env
+client/.env
+*.env.local
+*.env.*.local
+
+# logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# build output
+server/dist/
+client/dist/
+client/build/
+
+# caches
+.vite/
+.cache/
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+
+# coverage
+coverage/
+
+# misc
+*.swp
