@@ -7,6 +7,7 @@ const trainingSchema = new mongoose.Schema(
 		description: { type: String },
 		status: { type: String, enum: ['active', 'postponed', 'cancelled'], default: 'active' },
 		trainerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+		attendees: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 	},
 	{ timestamps: true }
 );

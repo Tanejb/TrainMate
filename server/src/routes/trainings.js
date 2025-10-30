@@ -16,6 +16,44 @@ async function ensureOwner(req, res, next) {
 	next();
 }
 
+// GET /api/trainings (trainer's own list with filters)
+router.get('/', requireAuth, requireRole('trainer'), async (req, res) => {
+	const { from, to, location } = req.query;
+	const filter = { trainerId: req.user.userId };
+	if (from || to) {
+		filter.dateTime = {};
+		if (from) filter.dateTime.$gte = new Date(from);
+		if (to) filter.dateTime.$lte = new Date(to);
+	}
+	if (location) {
+		filter.location = { $regex: location, $options: 'i' };
+	}
+	const items = await Training.find(filter).sort({ dateTime: 1 }).lean();
+	res.json(items.map(t => ({
+		id: t._id,
+		dateTime: t.dateTime,
+		location: t.location,
+		description: t.description,
+		status: t.status,
+		attendeesCount: Array.isArray(t.attendees) ? t.attendees.length : 0,
+	})));
+});
+
+// GET /api/trainings/:id (details with attendees)
+router.get('/:id', requireAuth, requireRole('trainer'), ensureOwner, async (req, res) => {
+	const t = await Training.findById(req.params.id)
+		.populate({ path: 'attendees', select: 'name email role', options: { lean: true } })
+		.lean();
+	return res.json({
+		id: t._id,
+		dateTime: t.dateTime,
+		location: t.location,
+		description: t.description,
+		status: t.status,
+		attendees: (t.attendees || []).map(a => ({ id: a._id, name: a.name, email: a.email })),
+	});
+});
+
 // POST /api/trainings (trainer creates)
 router.post('/', requireAuth, requireRole('trainer'), async (req, res) => {
 	const { dateTime, location, description, status } = req.body;
@@ -26,6 +64,7 @@ router.post('/', requireAuth, requireRole('trainer'), async (req, res) => {
 		description,
 		status: status || 'active',
 		trainerId: req.user.userId,
+		attendees: [],
 	});
 	return res.status(201).json(training);
 });

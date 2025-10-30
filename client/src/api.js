@@ -9,9 +9,14 @@ export async function api(path, { method = 'GET', body, token } = {}) {
 		},
 		body: body ? JSON.stringify(body) : undefined,
 	});
+
+	// Handle 204 No Content and empty responses
+	if (res.status === 204) return null;
+	const text = await res.text();
+	const json = text ? JSON.parse(text) : null;
+
 	if (!res.ok) {
-		const err = await res.json().catch(() => ({}));
-		throw new Error(err.error || `HTTP ${res.status}`);
+		throw new Error((json && json.error) || `HTTP ${res.status}`);
 	}
-	return res.json();
+	return json;
 }
