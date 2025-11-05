@@ -37,8 +37,11 @@ router.get('/', requireAuth, async (req, res) => {
 			postponedDate: t.postponedDate || null,
 			location: t.location,
 			description: t.description,
+			notes: t.notes || null,
 			status: t.status,
 			attendeesCount: Array.isArray(t.attendees) ? t.attendees.length : 0,
+			attendanceCount: Array.isArray(t.attendance) ? t.attendance.length : 0,
+			isPast: t.dateTime < new Date(),
 		})));
 	} else if (role === 'player') {
 		// US-05: Player sees upcoming trainings (active + postponed with new date)
@@ -69,10 +72,31 @@ router.get('/', requireAuth, async (req, res) => {
 	return res.status(403).json({ error: 'Forbidden' });
 });
 
+// GET /api/trainings/history (player's training history, US-09) - MUST BE BEFORE /:id
+router.get('/history', requireAuth, requireRole('player'), async (req, res) => {
+	const now = new Date();
+	const userId = req.user.userId.toString();
+	const items = await Training.find({
+		dateTime: { $lt: now },
+		status: { $ne: 'cancelled' },
+	}).populate('trainerId', 'name email').sort({ dateTime: -1 }).lean();
+	return res.json(items.map(t => ({
+		id: t._id,
+		dateTime: t.dateTime,
+		location: t.location,
+		description: t.description,
+		notes: t.notes || null,
+		trainerName: t.trainerId?.name || 'N/A',
+		wasRegistered: Array.isArray(t.attendees) && t.attendees.some(a => a.toString() === userId),
+		attended: Array.isArray(t.attendance) && t.attendance.some(a => a.toString() === userId),
+	})));
+});
+
 // GET /api/trainings/:id (details with attendees - trainer only, US-07)
 router.get('/:id', requireAuth, async (req, res) => {
 	const t = await Training.findById(req.params.id)
 		.populate({ path: 'attendees', select: 'name email role', options: { lean: true } })
+		.populate({ path: 'attendance', select: 'name email role', options: { lean: true } })
 		.populate({ path: 'trainerId', select: 'name email', options: { lean: true } })
 		.lean();
 	if (!t) return res.status(404).json({ error: 'Not found' });
@@ -85,9 +109,11 @@ router.get('/:id', requireAuth, async (req, res) => {
 		postponedDate: t.postponedDate || null,
 		location: t.location,
 		description: t.description,
+		notes: t.notes || null,
 		status: t.status,
 		trainerName: t.trainerId?.name || 'N/A',
 		attendees: (t.attendees || []).map(a => ({ id: a._id, name: a.name, email: a.email })),
+		attendance: (t.attendance || []).map(a => ({ id: a._id, name: a.name, email: a.email })),
 	});
 });
 
@@ -123,6 +149,25 @@ router.delete('/:id/unregister', requireAuth, requireRole('player'), async (req,
 	return res.status(204).send();
 });
 
+// POST /api/trainings/:id/attendance (coach marks attendance, US-08)
+router.post('/:id/attendance', requireAuth, requireRole('trainer'), ensureOwner, async (req, res) => {
+	const { playerIds } = req.body; // Array of player IDs who attended
+	if (!Array.isArray(playerIds)) {
+		return res.status(400).json({ error: 'playerIds must be an array' });
+	}
+	// Only allow marking attendance for past trainings
+	if (req.training.dateTime > new Date()) {
+		return res.status(400).json({ error: 'Cannot mark attendance for future training' });
+	}
+	// Only allow players who were registered
+	const validIds = playerIds.filter(id => 
+		req.training.attendees.some(a => a.toString() === id)
+	);
+	req.training.attendance = validIds;
+	await req.training.save();
+	return res.json({ message: 'Attendance marked', attendance: req.training.attendance });
+});
+
 // POST /api/trainings (trainer creates)
 router.post('/', requireAuth, requireRole('trainer'), async (req, res) => {
 	const { dateTime, location, description, status } = req.body;
@@ -140,10 +185,11 @@ router.post('/', requireAuth, requireRole('trainer'), async (req, res) => {
 
 // PATCH /api/trainings/:id (trainer edits only own)
 router.patch('/:id', requireAuth, requireRole('trainer'), ensureOwner, async (req, res) => {
-	const { dateTime, location, description, status, postponedDate } = req.body;
+	const { dateTime, location, description, status, postponedDate, notes } = req.body;
 	if (dateTime !== undefined) req.training.dateTime = new Date(dateTime);
 	if (location !== undefined) req.training.location = location;
 	if (description !== undefined) req.training.description = description;
+	if (notes !== undefined) req.training.notes = notes;
 	if (status !== undefined) {
 		const wasActive = req.training.status === 'active';
 		req.training.status = status;
