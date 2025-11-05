@@ -1,7 +1,9 @@
 import express from 'express';
 import { Training } from '../models/Training.js';
+import { User } from '../models/User.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
+import { sendTrainingCancellationEmail } from '../lib/email.js';
 
 const router = express.Router();
 
@@ -37,7 +39,7 @@ router.get('/', requireAuth, async (req, res) => {
 			postponedDate: t.postponedDate || null,
 			location: t.location,
 			description: t.description,
-			notes: t.notes || null,
+			notes: (t.notes !== undefined && t.notes !== null) ? t.notes : null,
 			status: t.status,
 			attendeesCount: Array.isArray(t.attendees) ? t.attendees.length : 0,
 			attendanceCount: Array.isArray(t.attendance) ? t.attendance.length : 0,
@@ -85,7 +87,7 @@ router.get('/history', requireAuth, requireRole('player'), async (req, res) => {
 		dateTime: t.dateTime,
 		location: t.location,
 		description: t.description,
-		notes: t.notes || null,
+		notes: (t.notes !== undefined && t.notes !== null) ? t.notes : null,
 		trainerName: t.trainerId?.name || 'N/A',
 		wasRegistered: Array.isArray(t.attendees) && t.attendees.some(a => a.toString() === userId),
 		attended: Array.isArray(t.attendance) && t.attendance.some(a => a.toString() === userId),
@@ -108,8 +110,8 @@ router.get('/:id', requireAuth, async (req, res) => {
 		dateTime: t.dateTime,
 		postponedDate: t.postponedDate || null,
 		location: t.location,
-		description: t.description,
-		notes: t.notes || null,
+		description: t.description || '',
+		notes: (t.notes !== undefined && t.notes !== null) ? t.notes : '',
 		status: t.status,
 		trainerName: t.trainerId?.name || 'N/A',
 		attendees: (t.attendees || []).map(a => ({ id: a._id, name: a.name, email: a.email })),
@@ -170,17 +172,27 @@ router.post('/:id/attendance', requireAuth, requireRole('trainer'), ensureOwner,
 
 // POST /api/trainings (trainer creates)
 router.post('/', requireAuth, requireRole('trainer'), async (req, res) => {
-	const { dateTime, location, description, status } = req.body;
+	const { dateTime, location, description, status, notes } = req.body;
 	if (!dateTime || !location) return res.status(400).json({ error: 'dateTime and location required' });
 	const training = await Training.create({
 		dateTime: new Date(dateTime),
 		location,
 		description,
+		notes: notes || '',
 		status: status || 'active',
 		trainerId: req.user.userId,
 		attendees: [],
 	});
-	return res.status(201).json(training);
+	const saved = await Training.findById(training._id).lean();
+	return res.status(201).json({
+		id: saved._id,
+		dateTime: saved.dateTime,
+		postponedDate: saved.postponedDate || null,
+		location: saved.location,
+		description: saved.description || '',
+		notes: (saved.notes !== undefined && saved.notes !== null) ? saved.notes : '',
+		status: saved.status,
+	});
 });
 
 // PATCH /api/trainings/:id (trainer edits only own)
@@ -192,6 +204,7 @@ router.patch('/:id', requireAuth, requireRole('trainer'), ensureOwner, async (re
 	if (notes !== undefined) req.training.notes = notes;
 	if (status !== undefined) {
 		const wasActive = req.training.status === 'active';
+		const wasCancelled = req.training.status === 'cancelled';
 		req.training.status = status;
 		if (status === 'postponed') {
 			// If postponed, set postponedDate if provided, or clear if explicitly null
@@ -205,15 +218,64 @@ router.patch('/:id', requireAuth, requireRole('trainer'), ensureOwner, async (re
 		} else {
 			req.training.postponedDate = null;
 		}
+		// US-12: Send email notifications when training is cancelled
+		if (status === 'cancelled' && !wasCancelled && req.training.attendees && req.training.attendees.length > 0) {
+			// Send emails in background (don't wait for them)
+			const attendees = await User.find({ _id: { $in: req.training.attendees } }).lean();
+			console.log(`Sending cancellation emails to ${attendees.length} players...`);
+			// Use Promise.allSettled to send all emails without blocking
+			Promise.allSettled(
+				attendees.map(async (player) => {
+					const result = await sendTrainingCancellationEmail(player.email, player.name, {
+						dateTime: req.training.dateTime,
+						location: req.training.location,
+						description: req.training.description,
+					});
+					if (!result) {
+						console.error(`Failed to send email to ${player.email}`);
+					}
+				})
+			).then(() => {
+				console.log('All cancellation emails processed');
+			});
+		}
 	} else if (postponedDate !== undefined) {
 		req.training.postponedDate = postponedDate ? new Date(postponedDate) : null;
 	}
 	await req.training.save();
-	return res.json(req.training);
+	const saved = await Training.findById(req.training._id).lean();
+	return res.json({
+		id: saved._id,
+		dateTime: saved.dateTime,
+		postponedDate: saved.postponedDate || null,
+		location: saved.location,
+		description: saved.description || '',
+		notes: (saved.notes !== undefined && saved.notes !== null) ? saved.notes : '',
+		status: saved.status,
+	});
 });
 
 // DELETE /api/trainings/:id (trainer deletes only own)
 router.delete('/:id', requireAuth, requireRole('trainer'), ensureOwner, async (req, res) => {
+	// US-12: Send email notifications before deleting (same as cancellation)
+	if (req.training.attendees && req.training.attendees.length > 0) {
+		const attendees = await User.find({ _id: { $in: req.training.attendees } }).lean();
+		console.log(`Sending cancellation emails to ${attendees.length} players (training deleted)...`);
+		Promise.allSettled(
+			attendees.map(async (player) => {
+				const result = await sendTrainingCancellationEmail(player.email, player.name, {
+					dateTime: req.training.dateTime,
+					location: req.training.location,
+					description: req.training.description,
+				});
+				if (!result) {
+					console.error(`Failed to send email to ${player.email}`);
+				}
+			})
+		).then(() => {
+			console.log('All cancellation emails processed');
+		});
+	}
 	await req.training.deleteOne();
 	return res.status(204).send();
 });

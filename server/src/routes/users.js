@@ -1,10 +1,38 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { User } from '../models/User.js';
+import { Training } from '../models/Training.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
 
 const router = express.Router();
+
+// GET /api/users/statistics (admin statistics, US-14) - MUST BE BEFORE /:id
+router.get('/statistics', requireAuth, requireRole('admin'), async (req, res) => {
+	const usersByRole = await User.aggregate([
+		{ $group: { _id: '$role', count: { $sum: 1 } } }
+	]);
+	const roleCounts = { admin: 0, trainer: 0, player: 0 };
+	usersByRole.forEach(r => { roleCounts[r._id] = r.count; });
+	
+	const totalTrainings = await Training.countDocuments();
+	const totalRegistrations = await Training.aggregate([
+		{ $project: { attendeesCount: { $size: { $ifNull: ['$attendees', []] } } } },
+		{ $group: { _id: null, total: { $sum: '$attendeesCount' } } }
+	]);
+	const registrationsCount = totalRegistrations[0]?.total || 0;
+	
+	return res.json({
+		users: {
+			total: roleCounts.admin + roleCounts.trainer + roleCounts.player,
+			admins: roleCounts.admin,
+			trainers: roleCounts.trainer,
+			players: roleCounts.player,
+		},
+		trainings: totalTrainings,
+		registrations: registrationsCount,
+	});
+});
 
 // GET /api/users (admin list)
 router.get('/', requireAuth, requireRole('admin'), async (req, res) => {

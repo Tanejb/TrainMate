@@ -6,6 +6,7 @@ import { connectToDatabase } from './lib/mongoose.js';
 import authRouter from './routes/auth.js';
 import usersRouter from './routes/users.js';
 import trainingsRouter from './routes/trainings.js';
+import injuriesRouter from './routes/injuries.js';
 
 dotenv.config();
 
@@ -21,6 +22,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/trainings', trainingsRouter);
+app.use('/api/injuries', injuriesRouter);
 
 const port = process.env.PORT || 4000;
 

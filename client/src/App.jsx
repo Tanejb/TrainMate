@@ -62,6 +62,8 @@ function AdminUsers({ token, onLogout }) {
 	const [users, setUsers] = useState([]);
 	const [q, setQ] = useState('');
 	const [loading, setLoading] = useState(true);
+	const [stats, setStats] = useState(null);
+	const [statsLoading, setStatsLoading] = useState(true);
 	const [err, setErr] = useState('');
 	const [note, setNote] = useState({ message: '', type: 'success' });
 	const [form, setForm] = useState({ name: '', email: '', password: '', role: 'trainer' });
@@ -85,7 +87,21 @@ function AdminUsers({ token, onLogout }) {
 			setLoading(false);
 		}
 	}
+
+	async function loadStats() {
+		setStatsLoading(true);
+		try {
+			const data = await api('/api/users/statistics', { token });
+			setStats(data);
+		} catch (e) {
+			console.error('Failed to load stats:', e);
+		} finally {
+			setStatsLoading(false);
+		}
+	}
+
 	useEffect(() => { load(); }, []);
+	useEffect(() => { loadStats(); }, []);
 
 	async function createUser(e) {
 		e.preventDefault();
@@ -120,6 +136,29 @@ function AdminUsers({ token, onLogout }) {
 				<h1 className="h1">Upravljanje uporabnikov</h1>
 				<button className="button" onClick={onLogout}>Odjava</button>
 			</div>
+
+			{statsLoading ? null : stats && (
+				<div className="card" style={{ marginBottom: 16 }}>
+					<h2 style={{ marginTop: 0, marginBottom: 16 }}>Statistika</h2>
+					<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+						<div style={{ padding: 16, background: '#f3f4f6', borderRadius: 8 }}>
+							<div style={{ fontSize: 14, color: '#6b7280', marginBottom: 4 }}>Skupaj uporabnikov</div>
+							<div style={{ fontSize: 24, fontWeight: 700 }}>{stats.users.total}</div>
+							<div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+								{stats.users.admins} admin, {stats.users.trainers} trener, {stats.users.players} igralec
+							</div>
+						</div>
+						<div style={{ padding: 16, background: '#f3f4f6', borderRadius: 8 }}>
+							<div style={{ fontSize: 14, color: '#6b7280', marginBottom: 4 }}>Treningi</div>
+							<div style={{ fontSize: 24, fontWeight: 700 }}>{stats.trainings}</div>
+						</div>
+						<div style={{ padding: 16, background: '#f3f4f6', borderRadius: 8 }}>
+							<div style={{ fontSize: 14, color: '#6b7280', marginBottom: 4 }}>Registracije</div>
+							<div style={{ fontSize: 24, fontWeight: 700 }}>{stats.registrations}</div>
+						</div>
+					</div>
+				</div>
+			)}
 
 			<div className="card" style={{ marginBottom: 16 }}>
 				<form className="form" onSubmit={createUser}>
@@ -221,17 +260,44 @@ function TrainerTrainings({ token, user, onLogout }) {
 	}
 
 	async function edit(id) {
-		const t = items.find(x => x.id === id);
-		if (!t) return;
-		setEditing(id);
-		setForm({
-			dateTime: new Date(t.dateTime).toISOString().slice(0, 16),
-			location: t.location,
-			description: t.description || '',
-			status: t.status,
-			postponedDate: t.postponedDate ? new Date(t.postponedDate).toISOString().slice(0, 16) : '',
-			notes: t.notes || '',
-		});
+		try {
+			// Load full training details to ensure we have all fields including notes
+			const t = await api(`/api/trainings/${id}`, { token });
+			setEditing(id);
+			setForm({
+				dateTime: new Date(t.dateTime).toISOString().slice(0, 16),
+				location: t.location || '',
+				description: t.description || '',
+				status: t.status || 'active',
+				postponedDate: t.postponedDate ? new Date(t.postponedDate).toISOString().slice(0, 16) : '',
+				notes: (t.notes !== undefined && t.notes !== null) ? String(t.notes) : '',
+			});
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
+	async function copyTraining(id) {
+		try {
+			// Load full training details to ensure we have all fields including notes
+			const t = await api(`/api/trainings/${id}`, { token });
+			setEditing(null); // Not editing, creating new
+			setForm({
+				dateTime: '', // Clear date so user must set new one
+				location: t.location || '',
+				description: t.description || '',
+				status: 'active', // Default to active
+				postponedDate: '',
+				notes: (t.notes !== undefined && t.notes !== null) ? String(t.notes) : '', // Copy notes
+			});
+			showSnack('Podatki treninga kopirani. Nastavi nov datum in shrani.');
+			// Scroll to form
+			setTimeout(() => {
+				document.querySelector('form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			}, 100);
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
 	}
 
 	function cancelEdit() {
@@ -254,6 +320,8 @@ function TrainerTrainings({ token, user, onLogout }) {
 
 	const [detailsModal, setDetailsModal] = useState(null);
 	const [attendanceState, setAttendanceState] = useState({});
+	const [injuries, setInjuries] = useState([]);
+	const [injuryForm, setInjuryForm] = useState({ playerId: '', description: '' });
 
 	async function loadDetails(id) {
 		try {
@@ -265,6 +333,47 @@ function TrainerTrainings({ token, user, onLogout }) {
 				checked[a.id] = (data.attendance || []).some(at => at.id === a.id);
 			});
 			setAttendanceState(checked);
+			// Load injuries for this training
+			const injuriesData = await api('/api/injuries', { token }).catch(() => []);
+			setInjuries(injuriesData.filter(i => i.trainingId === id));
+			setInjuryForm({ playerId: '', description: '' });
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
+	async function saveInjury() {
+		if (!detailsModal || !injuryForm.playerId || !injuryForm.description) {
+			showSnack('Izberi igralca in vnesi opis', 'error');
+			return;
+		}
+		try {
+			await api('/api/injuries', {
+				method: 'POST',
+				body: {
+					trainingId: detailsModal.id,
+					playerId: injuryForm.playerId,
+					description: injuryForm.description,
+				},
+				token,
+			});
+			showSnack('Poškodba zabeležena');
+			setInjuryForm({ playerId: '', description: '' });
+			await loadDetails(detailsModal.id);
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
+	async function toggleInjuryStatus(injuryId, currentStatus) {
+		try {
+			await api(`/api/injuries/${injuryId}`, {
+				method: 'PATCH',
+				body: { status: currentStatus === 'active' ? 'resolved' : 'active' },
+				token,
+			});
+			showSnack(currentStatus === 'active' ? 'Poškodba označena kot ozdravljena' : 'Poškodba označena kot aktivna');
+			await loadDetails(detailsModal.id);
 		} catch (e) {
 			showSnack(e.message, 'error');
 		}
@@ -291,7 +400,7 @@ function TrainerTrainings({ token, user, onLogout }) {
 					<div className="card" style={{ maxWidth: 700, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
 						<div className="header">
 							<h2>Podrobnosti treninga</h2>
-							<button className="button" onClick={() => { setDetailsModal(null); setAttendanceState({}); }}>✕</button>
+							<button className="button" onClick={() => { setDetailsModal(null); setAttendanceState({}); setInjuries([]); setInjuryForm({ playerId: '', description: '' }); }}>✕</button>
 						</div>
 						<div style={{ marginBottom: 16 }}>
 							<strong>{new Date(detailsModal.dateTime).toLocaleString()}</strong> · {detailsModal.location}
@@ -337,6 +446,41 @@ function TrainerTrainings({ token, user, onLogout }) {
 										<li key={a.id}>{a.name}</li>
 									))}
 								</ul>
+							</div>
+						)}
+						{new Date(detailsModal.dateTime) < new Date() && detailsModal.attendees.length > 0 && (
+							<div style={{ marginTop: 16, padding: 12, background: '#fef3c7', borderRadius: 8 }}>
+								<strong>Zabeleži poškodbo:</strong>
+								<div style={{ marginTop: 12 }}>
+									<select className="input" value={injuryForm.playerId} onChange={(e) => setInjuryForm({ ...injuryForm, playerId: e.target.value })} style={{ marginBottom: 8 }}>
+										<option value="">Izberi igralca</option>
+										{detailsModal.attendees.map(a => (
+											<option key={a.id} value={a.id}>{a.name}</option>
+										))}
+									</select>
+									<textarea className="input" rows={2} value={injuryForm.description} onChange={(e) => setInjuryForm({ ...injuryForm, description: e.target.value })} placeholder="Opis poškodbe..." style={{ marginBottom: 8 }} />
+									<button className="button" onClick={saveInjury}>Zabeleži poškodbo</button>
+								</div>
+								{injuries.length > 0 && (
+									<div style={{ marginTop: 16 }}>
+										<strong>Zabeležene poškodbe ({injuries.length}):</strong>
+										<ul style={{ marginTop: 8, paddingLeft: 20 }}>
+											{injuries.map(i => (
+												<li key={i.id} style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+													<div style={{ flex: 1 }}>
+														<strong>{i.playerName}</strong>: {i.description}
+														<span className={`badge ${i.status === 'active' ? 'postponed' : 'active'}`} style={{ marginLeft: 8 }}>
+															{i.status === 'active' ? 'Aktivna' : 'Ozdravljena'}
+														</span>
+													</div>
+													<button className="button" onClick={() => toggleInjuryStatus(i.id, i.status)} style={{ fontSize: 12, padding: '4px 8px' }}>
+														{i.status === 'active' ? 'Označi kot ozdravljena' : 'Označi kot aktivna'}
+													</button>
+												</li>
+											))}
+										</ul>
+									</div>
+								)}
 							</div>
 						)}
 					</div>
@@ -465,8 +609,11 @@ function TrainerTrainings({ token, user, onLogout }) {
 											)}
 										</td>
 										<td style={{ textAlign: 'right' }}>
-											<button className="button" onClick={() => edit(t.id)} style={{ marginRight: 8 }}>Uredi</button>
-											<button className="button" onClick={() => remove(t.id)}>Izbriši</button>
+											<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+												<button className="button" onClick={() => copyTraining(t.id)} style={{ background: '#6366f1', fontSize: 14, padding: '8px 12px' }}>Kopiraj</button>
+												<button className="button" onClick={() => edit(t.id)} style={{ fontSize: 14, padding: '8px 12px' }}>Uredi</button>
+												<button className="button" onClick={() => remove(t.id)} style={{ fontSize: 14, padding: '8px 12px' }}>Izbriši</button>
+											</div>
 										</td>
 									</tr>
 								))
@@ -669,7 +816,7 @@ function PlayerTrainings({ token, user, onLogout }) {
 													<span style={{ color: '#f59e0b' }}>Ni bil prisoten</span>
 												)}
 											</td>
-											<td>{t.notes || '-'}</td>
+											<td>{t.notes ? t.notes : '-'}</td>
 										</tr>
 									))
 								)}
