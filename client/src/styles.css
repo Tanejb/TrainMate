@@ -19,3 +19,7 @@
 .badge.active{background:#16a34a}
 .badge.postponed{background:#f59e0b}
 .badge.cancelled{background:#dc2626}
+.button.register{background:#16a34a;padding:12px 16px;min-width:120px}
+.button.register:hover{background:#15803d}
+.button.unregister{background:#dc2626;padding:12px 16px;min-width:120px}
+.button.unregister:hover{background:#b91c1c}

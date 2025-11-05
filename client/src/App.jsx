@@ -48,11 +48,14 @@ export default function App() {
 		);
 	}
 
-	return user.role === 'admin' ? (
-		<AdminUsers token={token} onLogout={() => { localStorage.removeItem('tm_token'); location.reload(); }} />
-	) : (
-		<TrainerTrainings token={token} user={user} onLogout={() => { localStorage.removeItem('tm_token'); location.reload(); }} />
-	);
+	if (user.role === 'admin') {
+		return <AdminUsers token={token} onLogout={() => { localStorage.removeItem('tm_token'); location.reload(); }} />;
+	} else if (user.role === 'trainer') {
+		return <TrainerTrainings token={token} user={user} onLogout={() => { localStorage.removeItem('tm_token'); location.reload(); }} />;
+	} else if (user.role === 'player') {
+		return <PlayerTrainings token={token} user={user} onLogout={() => { localStorage.removeItem('tm_token'); location.reload(); }} />;
+	}
+	return null;
 }
 
 function AdminUsers({ token, onLogout }) {
@@ -175,7 +178,7 @@ function TrainerTrainings({ token, user, onLogout }) {
 	const [err, setErr] = useState('');
 	const [note, setNote] = useState({ message: '', type: 'success' });
 	const [editing, setEditing] = useState(null);
-	const [form, setForm] = useState({ dateTime: '', location: '', description: '', status: 'active' });
+	const [form, setForm] = useState({ dateTime: '', location: '', description: '', status: 'active', postponedDate: '' });
 
 	function showSnack(message, type = 'success') {
 		setNote({ message, type });
@@ -207,7 +210,7 @@ function TrainerTrainings({ token, user, onLogout }) {
 				await api('/api/trainings', { method: 'POST', body: form, token });
 				showSnack('Trening ustvarjen');
 			}
-			setForm({ dateTime: '', location: '', description: '', status: 'active' });
+			setForm({ dateTime: '', location: '', description: '', status: 'active', postponedDate: '' });
 			setEditing(null);
 			await load();
 		} catch (e) {
@@ -225,6 +228,7 @@ function TrainerTrainings({ token, user, onLogout }) {
 			location: t.location,
 			description: t.description || '',
 			status: t.status,
+			postponedDate: t.postponedDate ? new Date(t.postponedDate).toISOString().slice(0, 16) : '',
 		});
 	}
 
@@ -240,9 +244,42 @@ function TrainerTrainings({ token, user, onLogout }) {
 		}
 	}
 
+	const [detailsModal, setDetailsModal] = useState(null);
+
+	async function loadDetails(id) {
+		try {
+			const data = await api(`/api/trainings/${id}`, { token });
+			setDetailsModal(data);
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
 	return (
 		<div className="container">
 			<Snackbar message={note.message} type={note.type} />
+			{detailsModal && (
+				<div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+					<div className="card" style={{ maxWidth: 600, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
+						<div className="header">
+							<h2>Prijavljeni igralci</h2>
+							<button className="button" onClick={() => setDetailsModal(null)}>✕</button>
+						</div>
+						<div style={{ marginBottom: 16 }}>
+							<strong>{new Date(detailsModal.dateTime).toLocaleString()}</strong> · {detailsModal.location}
+						</div>
+						{detailsModal.description && <div style={{ marginBottom: 16 }}>{detailsModal.description}</div>}
+						<div>
+							<strong>Prijavljeni igralci ({detailsModal.attendees.length}):</strong>
+							<ul style={{ marginTop: 8, paddingLeft: 20 }}>
+								{detailsModal.attendees.map(a => (
+									<li key={a.id}>{a.name} ({a.email})</li>
+								))}
+							</ul>
+						</div>
+					</div>
+				</div>
+			)}
 			<div className="header">
 				<h1 className="h1">Moji treningi</h1>
 				<div>
@@ -274,6 +311,12 @@ function TrainerTrainings({ token, user, onLogout }) {
 								<option value="cancelled">Odpovedano</option>
 							</select>
 						</div>
+						{form.status === 'postponed' && (
+							<div style={{ flex: 1 }}>
+								<div className="label">Novi datum (pustite prazno če še ni znan)</div>
+								<input className="input" type="datetime-local" value={form.postponedDate} onChange={(e) => setForm({ ...form, postponedDate: e.target.value })} />
+							</div>
+						)}
 						<button className="button" type="submit">{editing ? 'Shrani' : 'Dodaj'}</button>
 					</div>
 					{err && <div className="error">{err}</div>}
@@ -289,22 +332,172 @@ function TrainerTrainings({ token, user, onLogout }) {
 								<th style={{ textAlign: 'left' }}>Lokacija</th>
 								<th style={{ textAlign: 'left' }}>Opis</th>
 								<th style={{ textAlign: 'left' }}>Status</th>
+								<th style={{ textAlign: 'left' }}>Prijavljeni</th>
 								<th style={{ textAlign: 'right' }}>Akcije</th>
 							</tr>
 						</thead>
 						<tbody>
 							{items.map(t => (
 								<tr key={t.id}>
-									<td>{new Date(t.dateTime).toLocaleString()}</td>
+									<td>
+										{new Date(t.dateTime).toLocaleString()}
+										{t.status === 'postponed' && t.postponedDate && (
+											<div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+												Novi datum: {new Date(t.postponedDate).toLocaleString()}
+											</div>
+										)}
+										{t.status === 'postponed' && !t.postponedDate && (
+											<div style={{ fontSize: 12, color: '#f59e0b', marginTop: 4 }}>
+												Novi datum še ni znan
+											</div>
+										)}
+									</td>
 									<td>{t.location}</td>
 									<td>{t.description}</td>
 									<td><span className={`badge ${t.status}`}>{t.status === 'active' ? 'Aktivno' : t.status === 'postponed' ? 'Preloženo' : 'Odpovedano'}</span></td>
+									<td>
+										<button className="button" onClick={() => loadDetails(t.id)} style={{ fontSize: 14, padding: '6px 12px' }}>
+											{t.attendeesCount || 0} prijavljenih
+										</button>
+									</td>
 									<td style={{ textAlign: 'right' }}>
 										<button className="button" onClick={() => edit(t.id)} style={{ marginRight: 8 }}>Uredi</button>
 										<button className="button" onClick={() => remove(t.id)}>Izbriši</button>
 									</td>
 								</tr>
 							))}
+						</tbody>
+					</table>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function PlayerTrainings({ token, user, onLogout }) {
+	const [items, setItems] = useState([]);
+	const [loading, setLoading] = useState(true);
+	const [err, setErr] = useState('');
+	const [note, setNote] = useState({ message: '', type: 'success' });
+
+	function showSnack(message, type = 'success') {
+		setNote({ message, type });
+		setTimeout(() => setNote({ message: '', type }), 2500);
+	}
+
+	async function load() {
+		setLoading(true);
+		setErr('');
+		try {
+			const data = await api('/api/trainings', { token });
+			setItems(data);
+		} catch (e) {
+			setErr(e.message);
+		} finally {
+			setLoading(false);
+		}
+	}
+	useEffect(() => { load(); }, []);
+
+	async function register(id) {
+		try {
+			await api(`/api/trainings/${id}/register`, { method: 'POST', token });
+			showSnack('Prijavljen na trening');
+			await load();
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
+	async function unregister(id) {
+		if (!confirm('Odjavljam se s treninga?')) return;
+		try {
+			await api(`/api/trainings/${id}/unregister`, { method: 'DELETE', token });
+			showSnack('Odjavljen s treninga');
+			await load();
+		} catch (e) {
+			showSnack(e.message, 'error');
+		}
+	}
+
+	return (
+		<div className="container">
+			<Snackbar message={note.message} type={note.type} />
+			<div className="header">
+				<h1 className="h1">Prihajajoči treningi</h1>
+				<div>
+					{user?.name} · {user?.role}
+					<button className="button" style={{ marginLeft: 12 }} onClick={onLogout}>Odjava</button>
+				</div>
+			</div>
+
+			<div className="card">
+				{loading ? 'Nalaganje...' : (
+					<table style={{ width: '100%', borderCollapse: 'collapse' }}>
+						<thead>
+							<tr>
+								<th style={{ textAlign: 'left' }}>Datum</th>
+								<th style={{ textAlign: 'left' }}>Lokacija</th>
+								<th style={{ textAlign: 'left' }}>Opis</th>
+								<th style={{ textAlign: 'left' }}>Trener</th>
+								<th style={{ textAlign: 'left' }}>Status</th>
+								<th style={{ textAlign: 'right' }}>Akcije</th>
+							</tr>
+						</thead>
+						<tbody>
+							{items.length === 0 ? (
+								<tr>
+									<td colSpan={6} style={{ textAlign: 'center', padding: 20 }}>Ni prihajajočih treningov</td>
+								</tr>
+							) : (
+								items.map(t => (
+									<tr key={t.id}>
+										<td>
+											{new Date(t.dateTime).toLocaleString()}
+											{t.status === 'postponed' && t.postponedDate && (
+												<div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+													Novi datum: {new Date(t.postponedDate).toLocaleString()}
+												</div>
+											)}
+											{t.status === 'postponed' && !t.postponedDate && (
+												<div style={{ fontSize: 12, color: '#f59e0b', marginTop: 4 }}>
+													Novi datum še ni znan
+												</div>
+											)}
+										</td>
+										<td>{t.location}</td>
+										<td>{t.description}</td>
+										<td>{t.trainerName}</td>
+										<td>
+											<span className={`badge ${t.status}`}>
+												{t.status === 'active' ? 'Aktivno' : t.status === 'postponed' ? 'Preloženo' : 'Odpovedano'}
+											</span>
+											{t.status === 'postponed' && (
+												<div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+													{t.postponedDate ? 'Preloženo - prijavi se za novi datum' : 'Preloženo - novi datum še ni znan'}
+												</div>
+											)}
+										</td>
+										<td style={{ textAlign: 'right' }}>
+											{t.status === 'active' ? (
+												t.isRegistered ? (
+													<button className="button unregister" onClick={() => unregister(t.id)}>Odjavi</button>
+												) : (
+													<button className="button register" onClick={() => register(t.id)}>Prijavi se</button>
+												)
+											) : t.status === 'postponed' && t.postponedDate ? (
+												t.isRegistered ? (
+													<button className="button unregister" onClick={() => unregister(t.id)}>Odjavi</button>
+												) : (
+													<button className="button register" onClick={() => register(t.id)}>Prijavi se</button>
+												)
+											) : (
+												<span style={{ color: '#6b7280', fontSize: 14 }}>Ni možno</span>
+											)}
+										</td>
+									</tr>
+								))
+							)}
 						</tbody>
 					</table>
 				)}
